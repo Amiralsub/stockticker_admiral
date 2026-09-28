@@ -19,8 +19,8 @@
 // ==========================================
 
 // Identifiants du réseau WiFi
-const char* ssid = "plopplopplop";
-const char* password = "papapapa";
+const char* ssid = "ssid";
+const char* password = "cle_wifi";
 
 // Actions et indices de la Page 1 (Yahoo Finance : .PA pour Paris, .EX pour Xetra)
 String page1Stocks[] = {"^GSPC", "^STOXX", "^IBEX", "GOOGL", "SAF.PA"};
