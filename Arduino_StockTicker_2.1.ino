@@ -20,8 +20,8 @@
 // 1. CONFIGURATION GÉNÉRALE & PARAMÈTRES RÉSEAU
 // ============================================================================
 
-const char* ssid = "plopplopplop";       // Nom du réseau WiFi
-const char* password = "papapapa";     // Mot de passe du réseau WiFi
+const char* ssid = " ";       // Nom du réseau WiFi
+const char* password = " ";     // Mot de passe du réseau WiFi
 
 // Symboles boursiers affichés sur la Page 1 (Indices US/UE, Actions, etc.)
 String page1Stocks[] = {"^GSPC", "^STOXX", "^IBEX", "GOOGL", "SAF.PA"};
