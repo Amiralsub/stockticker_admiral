@@ -1,7 +1,9 @@
-// ==========================================
-// ESP32 STOCK TICKER - Two Page Display (Optimized with JSON Filtering)
+// ============================================================================
+// ESP32 STOCK TICKER - Affichage sur 2 pages (Yahoo Finance + Météo + Mode Éco)
 // Matériel : ESP32 + Écran e-Paper 4.2 pouces Waveshare (Rev 2.2)
-// ==========================================
+// Description : Récupère et affiche des cours boursiers, des cryptomonnaies 
+//               et la météo avec gestion détaillée des erreurs HTTP et économie d'énergie.
+// ============================================================================
 
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -12,50 +14,57 @@
 #include <Fonts/FreeSansBold18pt7b.h>
 #include <Fonts/FreeSans9pt7b.h>
 #include <time.h>
+#include <esp_bt.h> // Nécessaire pour désactiver le Bluetooth (gain énergétique)
 
-// ==========================================
-// 1. CONFIGURATION GÉNÉRALE
-// ==========================================
+// ============================================================================
+// 1. CONFIGURATION GÉNÉRALE & PARAMÈTRES RÉSEAU
+// ============================================================================
 
-const char* ssid = "ssid";
-const char* password = "cle_wifi";
+const char* ssid = "plopplopplop";       // Nom du réseau WiFi
+const char* password = "papapapa";     // Mot de passe du réseau WiFi
 
+// Symboles boursiers affichés sur la Page 1 (Indices US/UE, Actions, etc.)
 String page1Stocks[] = {"^GSPC", "^STOXX", "^IBEX", "GOOGL", "SAF.PA"};
 int page1Count = 5;
 
+// Symboles boursiers affichés sur la Page 2 (Actions diverses + Matières premières)
 String page2Stocks[] = {"CEC.PA", "AI.PA", "ORA.PA", "TSLA", "BZ=F"};
 int page2StockCount = 5;
 
+// Cryptomonnaies affichées sur la Page 2
 String page2Crypto[] = {"BTC-USD"};
 int page2CryptoCount = 1;
 
-const long dataRefreshInterval = 900000;  // 15 minutes
-const long pageSwapInterval = 60000;      // 60 secondes
+// Intervalles de temps (en millisecondes)
+const long dataRefreshInterval = 900000;  // 15 minutes (rafraîchissement API)
+const long pageSwapInterval = 60000;      // 60 secondes (alternance Page 1 / Page 2)
 
-// ==========================================
-// 2. CONFIGURATION DE L'ÉCRAN E-PAPER
-// ==========================================
+// ============================================================================
+// 2. CONFIGURATION DE L'ÉCRAN E-PAPER (Broches SPI)
+// ============================================================================
 
 #define EPD_CS    5
 #define EPD_DC    17
 #define EPD_RST   16
 #define EPD_BUSY  4   
 
+// Initialisation du driver pour l'écran 4.2 pouces noir et blanc
 GxEPD2_BW<GxEPD2_420_GDEY042T81, GxEPD2_420_GDEY042T81::HEIGHT> 
   display(GxEPD2_420_GDEY042T81(EPD_CS, EPD_DC, EPD_RST, -1));
 
-// ==========================================
+// ============================================================================
 // 3. STRUCTURES DE DONNÉES ET VARIABLES GLOBALES
-// ==========================================
+// ============================================================================
 
 struct StockData {
-  String symbol;       
-  float price;         
-  float change;        
-  float changePercent; 
-  bool isValid;        
-  bool isCrypto;       
-  String currency;     
+  String symbol;
+  float price;
+  float change;
+  float changePercent;
+  bool isValid;
+  bool isCrypto;
+  String currency; // "$" ou "€"
+  int failCount;   // Compteur d'échecs consécutifs pour les tentatives
 };
 
 StockData page1Data[5];
@@ -65,21 +74,24 @@ StockData page2CryptoData[2];
 float outdoorTemp = 0.0;
 bool weatherValid = false;
 
+// Drapeaux et variables d'état pour la gestion des erreurs
+bool wifiErrorState = false;
+bool stockErrorState = false;
+bool weatherErrorState = false;
+int lastStockHttpCode = 200; // Stocke le dernier code HTTP boursier en cas d'erreur
+
 unsigned long lastDataRefresh = 0;
 unsigned long lastPageSwap = 0;
-int currentPage = 0; 
+int currentPage = 0; // 0 = Page 1, 1 = Page 2
 
-// ==========================================
-// 4. CONFIGURATION DU FUSEAU HORAIRE (Paris)
-// ==========================================
-
+// Configuration du serveur de temps (NTP) pour Paris
 const char* ntpServer = "pool.ntp.org";
-const long gmtOffset_sec = 3600;        
-const int daylightOffset_sec = 3600;    
+const long gmtOffset_sec = 3600;          // UTC+1 (Heure standard)
+const int daylightOffset_sec = 3600;     // +1h en été (Heure d'été)
 
-// ==========================================
-// 5. DÉCLARATIONS ANTICIPÉES
-// ==========================================
+// ============================================================================
+// 4. DÉCLARATIONS ANTICIPÉES (PROTOTYPES)
+// ============================================================================
 bool checkAndEnsureWiFi();
 StockData getStockQuote(String symbol);
 StockData getCryptoQuote(String symbol);
@@ -97,19 +109,25 @@ void drawFooter(int pageNum);
 void showMessage(String title, String message);
 void showError(String title, String message);
 
-// ==========================================
-// 6. INITIALISATION (SETUP)
-// ==========================================
+// Gestion dynamique de la fréquence du processeur (Économie d'énergie)
+void setHighCPU() { setCpuFrequencyMhz(240); } // Pleine puissance (WiFi, API, Écran)
+void setLowCPU()  { setCpuFrequencyMhz(80); }  // Économie d'énergie le reste du temps
+
+// ============================================================================
+// 5. INITIALISATION (SETUP)
+// ============================================================================
 
 void setup() {
+  btStop();       // Désactive le module Bluetooth (inutilisé) pour économiser l'énergie
+  setHighCPU();   // Passe à 240 MHz pour un démarrage rapide
+  
   Serial.begin(115200);
   delay(1000);
   
   Serial.println("\n=== Démarrage de l'ESP32 Stock Ticker ===");
-  Serial.printf("[INIT] Heap libre initial : %d octets\n", ESP.getFreeHeap());
   
   display.init(115200);
-  display.setRotation(3);  
+  display.setRotation(3); // Orientation horizontale de l'écran
   display.setTextColor(GxEPD_BLACK);
   
   showMessage("Connexion...", "Veuillez patienter");
@@ -120,45 +138,54 @@ void setup() {
     showMessage("Connecte !", "Recuperation des donnees...");
     delay(2000);
     
-    updateAllData();
+    updateAllData();          
     displayCurrentPage(false);  
     
     Serial.println("=== Configuration terminée ===\n");
   } else {
-    Serial.println("\n[ERREUR CRITIQUE] Échec persistant de la connexion WiFi au démarrage !");
-    showError("Erreur WiFi", "Connexion impossible a SSID: " + String(ssid));
+    wifiErrorState = true;
+    showError("Erreur WiFi", "Vérifiez les identifiants");
   }
+  
+  setLowCPU(); 
 }
 
-// ==========================================
-// 7. BOUCLE PRINCIPALE (LOOP)
-// ==========================================
+// ============================================================================
+// 6. BOUCLE PRINCIPALE (LOOP)
+// ============================================================================
 
 void loop() {
   unsigned long currentTime = millis();
   
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("\n[WIFI LOG] ⚠️ Connexion perdue ! Tentative de reconnexion...");
-    if (!checkAndEnsureWiFi()) {
-      showError("Erreur WiFi", "Connexion perdue");
-      delay(5000); 
-      return;
-    }
+    setHighCPU();
+    wifiErrorState = !checkAndEnsureWiFi();
+    setLowCPU();
+  } else {
+    wifiErrorState = false;
   }
   
   if (isRefreshAllowed()) {
+    
     if (currentTime - lastDataRefresh >= dataRefreshInterval) {
+      setHighCPU();
       Serial.println("\n--- Rafraîchissement planifié des données ---");
       updateAllData();
-      displayCurrentPage(false);  
+      displayCurrentPage(false); 
+      lastDataRefresh = millis();
+      lastPageSwap = millis();
+      setLowCPU();
     }
     
     if (currentTime - lastPageSwap >= pageSwapInterval) {
+      setHighCPU();
       Serial.println("\n--- Changement de page d'affichage ---");
       currentPage = (currentPage == 0) ? 1 : 0;  
       lastPageSwap = currentTime;
-      displayCurrentPage(true);  
+      displayCurrentPage(true); 
+      setLowCPU();
     }
+    
   } else {
     lastDataRefresh = currentTime;
     lastPageSwap = currentTime;
@@ -167,26 +194,42 @@ void loop() {
   delay(1000); 
 }
 
-// ==========================================
-// 8. GESTION DU WIFI ET MARCHÉS
-// ==========================================
+// ============================================================================
+// 7. GESTION DU RÉSEAU ET DES HORAIRES DE MARCHÉ
+// ============================================================================
 
 bool checkAndEnsureWiFi() {
-  if (WiFi.status() == WL_CONNECTED) return true;
+  // Si déjà connecté, tout va bien
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiErrorState = false;
+    return true;
+  }
 
+  static unsigned long lastBeginAttempt = 0;
+  unsigned long now = millis();
+
+  // Si on a lancé une tentative il y a moins de 15 secondes, on évite de relancer WiFi.begin() (anti "sta is connecting")
+  if (now - lastBeginAttempt < 15000 && lastBeginAttempt != 0) {
+    return (WiFi.status() == WL_CONNECTED);
+  }
+
+  // Si l'ESP est déjà en train de se connecter, on ne force pas une nouvelle configuration
+  if (WiFi.status() != WL_DISCONNECTED && WiFi.status() != WL_NO_SSID_AVAIL && lastBeginAttempt != 0) {
+    return false;
+  }
+
+  Serial.println("[WIFI] Lancement d'une nouvelle tentative de connexion...");
+  lastBeginAttempt = now;
   WiFi.begin(ssid, password);
+  
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+  while (WiFi.status() != WL_CONNECTED && attempts < 10) {
     delay(500);
-    Serial.print(".");
     attempts++;
   }
   
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n[WIFI LOG] ✓ Reconnexion réussie ! IP : " + WiFi.localIP().toString());
-    return true;
-  }
-  return false;
+  wifiErrorState = (WiFi.status() != WL_CONNECTED);
+  return !wifiErrorState;
 }
 
 bool isRefreshAllowed() {
@@ -210,56 +253,106 @@ bool isNewYorkOpen() {
   if (!getLocalTime(&timeinfo)) return false;
   int dayOfWeek = timeinfo.tm_wday;
   if (dayOfWeek == 0 || dayOfWeek == 6) return false;
-  int hourNY = (timeinfo.tm_hour - 6 + 24) % 24; 
+  
+  int hourNY = timeinfo.tm_hour - 6;
+  if (hourNY < 0) hourNY += 24;
   int currentMinutesNY = hourNY * 60 + timeinfo.tm_min;
   return (currentMinutesNY >= (9 * 60 + 30) && currentMinutesNY < (16 * 60));
 }
 
-// ==========================================
-// 9. RÉCUPÉRATION DES DONNÉES (API OPTIMISÉE)
-// ==========================================
+// ============================================================================
+// 8. RÉCUPÉRATION DES DONNÉES (APIs HTTP)
+// ============================================================================
 
 void updateWeather() {
-  if (!checkAndEnsureWiFi()) return;
+  Serial.println("[MÉTÉO] Récupération de la météo...");
+  if (!checkAndEnsureWiFi()) {
+    weatherValid = false;
+    weatherErrorState = true;
+    return;
+  }
   
   HTTPClient http;
   http.setTimeout(5000);
-  http.begin("http://api.open-meteo.com/v1/forecast?latitude=44.84&longitude=-0.58&current=temperature_2m");
+  http.begin("https://api.open-meteo.com/v1/forecast?latitude=44.84&longitude=-0.58&current=temperature_2m");
   
-  if (http.GET() == HTTP_CODE_OK) {
+  int httpCode = http.GET();
+  if (httpCode == HTTP_CODE_OK) {
+    String payload = http.getString();
     JsonDocument doc;
-    if (!deserializeJson(doc, http.getStream())) {
-      if (!doc["current"]["temperature_2m"].isNull()) {
-        outdoorTemp = doc["current"]["temperature_2m"].as<float>();
-        weatherValid = true;
-      }
+    DeserializationError error = deserializeJson(doc, payload);
+    
+    if (!error && !doc["current"]["temperature_2m"].isNull()) {
+      outdoorTemp = doc["current"]["temperature_2m"].as<float>();
+      weatherValid = true;
+      weatherErrorState = false;
+      Serial.printf("[MÉTÉO] Succès : %.1f°C\n", outdoorTemp);
+    } else {
+      weatherValid = false;
+      weatherErrorState = true;
+      Serial.println("[MÉTÉO] Erreur de parsing JSON");
     }
+  } else {
+    weatherValid = false;
+    weatherErrorState = true;
+    Serial.printf("[MÉTÉO] Échec - Erreur HTTP ou Timeout (Code: %d)\n", httpCode);
   }
   http.end();
 }
 
 void updateAllData() {
-  Serial.println("\n--- Début de la mise à jour globale ---");
-  Serial.printf("[HEAP] Mémoire libre avant maj : %d octets\n", ESP.getFreeHeap());
+  int failedStocks = 0;
   
+  // Mise à jour Page 1
   for (int i = 0; i < page1Count; i++) {
-    page1Data[i] = getStockQuote(page1Stocks[i]);
-    delay(1000); 
+    StockData newData = getStockQuote(page1Stocks[i]);
+    if (newData.isValid) {
+      page1Data[i] = newData;
+      page1Data[i].failCount = 0; // Remise à zéro du compteur en cas de succès
+    } else {
+      page1Data[i].failCount++;   // Incrémentation des échecs consécutifs
+      if (page1Data[i].failCount >= 3) {
+        page1Data[i].isValid = false; // Bloque et force l'affichage de l'erreur après 3 échecs
+      }
+      failedStocks++;
+    }
+    delay(500);
   }
-  
+
+  // Mise à jour Page 2 Actions
   for (int i = 0; i < page2StockCount; i++) {
-    page2StockData[i] = getStockQuote(page2Stocks[i]);
-    delay(1000);
+    StockData newData = getStockQuote(page2Stocks[i]);
+    if (newData.isValid) {
+      page2StockData[i] = newData;
+      page2StockData[i].failCount = 0;
+    } else {
+      page2StockData[i].failCount++;
+      if (page2StockData[i].failCount >= 3) {
+        page2StockData[i].isValid = false;
+      }
+      failedStocks++;
+    }
+    delay(500);
   }
-  
+
+  // Mise à jour Page 2 Cryptos
   for (int i = 0; i < page2CryptoCount; i++) {
-    page2CryptoData[i] = getCryptoQuote(page2Crypto[i]);
-    delay(1000);
+    StockData newData = getCryptoQuote(page2Crypto[i]);
+    if (newData.isValid) {
+      page2CryptoData[i] = newData;
+      page2CryptoData[i].failCount = 0;
+    } else {
+      page2CryptoData[i].failCount++;
+      if (page2CryptoData[i].failCount >= 3) {
+        page2CryptoData[i].isValid = false;
+      }
+      failedStocks++;
+    }
+    delay(500);
   }
   
+  stockErrorState = (failedStocks > 0);
   updateWeather();
-  Serial.printf("[HEAP] Mémoire libre après maj : %d octets\n", ESP.getFreeHeap());
-  Serial.println("--- Fin de la mise à jour globale ---\n");
 }
 
 StockData getStockQuote(String symbol) {
@@ -267,44 +360,37 @@ StockData getStockQuote(String symbol) {
   data.symbol = symbol;
   data.isValid = false;
   data.isCrypto = false;
+  data.failCount = 0;
+  
   data.currency = (symbol.endsWith(".PA") || symbol.endsWith(".EX") || symbol == "^STOXX" || symbol == "^IBEX") ? "€" : "$";
   
   if (!checkAndEnsureWiFi()) return data;
   
   HTTPClient http;
-  String url = "https://query1.finance.yahoo.com/v8/finance/chart/" + symbol + "?interval=1d&range=2d";
+  http.setTimeout(6000);
+  http.begin("https://query1.finance.yahoo.com/v8/finance/chart/" + symbol + "?interval=1d&range=2d");
+  http.setUserAgent("Mozilla/5.0");
   
-  http.begin(url);
-  http.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
-  http.setTimeout(6000); 
+  int httpCode = http.GET();
+  Serial.printf("[BOURSE] Symbole %s - Code HTTP: %d\n", symbol.c_str(), httpCode);
   
-  if (http.GET() == HTTP_CODE_OK) {
-    // 💡 OPTIMISATION : Utilisation d'un filtre JSON pour ne garder que le bloc "meta"
-    // Cela réduit drastiquement la taille du document en mémoire RAM (Heap)
-    JsonDocument filter;
-    filter["chart"]["result"][0]["meta"]["regularMarketPrice"] = true;
-    filter["chart"]["result"][0]["meta"]["chartPreviousClose"] = true;
-    filter["chart"]["result"][0]["meta"]["previousClose"] = true;
-
+  if (httpCode == HTTP_CODE_OK) {
     JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
-    
-    if (!error) {
-      JsonObject meta = doc["chart"]["result"][0]["meta"];
-      if (!meta.isNull() && !meta["regularMarketPrice"].isNull()) {
-        float regularMarketPrice = meta["regularMarketPrice"].as<float>();
-        float previousClose = meta["chartPreviousClose"] | meta["previousClose"] | regularMarketPrice;
-        
-        data.price = regularMarketPrice;
-        data.change = data.price - previousClose;
-        data.changePercent = (previousClose != 0) ? (data.change / previousClose) * 100.0 : 0.0;
-        data.isValid = true;
-        
-        Serial.printf("[API] ✓ %s : Prix=%.2f, Var=%.2f (%.2f%%)\n", symbol.c_str(), data.price, data.change, data.changePercent);
+    if (!deserializeJson(doc, http.getString())) {
+      JsonArray result = doc["chart"]["result"];
+      if (!result.isNull() && result.size() > 0) {
+        JsonObject meta = result[0]["meta"];
+        if (!meta.isNull() && !meta["regularMarketPrice"].isNull()) {
+          data.price = meta["regularMarketPrice"].as<float>();
+          float prevClose = meta["chartPreviousClose"] | meta["previousClose"] | data.price;
+          data.change = data.price - prevClose;
+          data.changePercent = (prevClose != 0) ? (data.change / prevClose) * 100.0 : 0.0;
+          data.isValid = true;
+        }
       }
-    } else {
-      Serial.printf("[API] ❌ Erreur JSON %s : %s\n", symbol.c_str(), error.c_str());
     }
+  } else {
+    lastStockHttpCode = httpCode;
   }
   
   http.end();
@@ -316,13 +402,13 @@ StockData getCryptoQuote(String symbol) {
   data.isCrypto = true;
   data.currency = "$";
   data.symbol = symbol;
-  data.symbol.replace("-USD", ""); 
+  data.symbol.replace("-USD", "");
   return data;
 }
 
-// ==========================================
-// 10. AFFICHAGE GRAPHIQUE (Inchangé)
-// ==========================================
+// ============================================================================
+// 9. AFFICHAGE GRAPHIQUE SUR L'ÉCRAN E-PAPER
+// ============================================================================
 
 void displayCurrentPage(bool usePartial) {
   if (currentPage == 0) displayPage1(usePartial);
@@ -342,17 +428,14 @@ void displayPage1(bool usePartial) {
     
     display.setFont(&FreeSans9pt7b);
     display.setCursor(5, 38);
-    String marketStatus = String("Paris:") + (isParisOpen() ? "ouvert" : "ferme") + String(" NY:") + (isNewYorkOpen() ? "ouvert" : "ferme");
-    display.print(marketStatus);
+    display.print(String("Paris:") + (isParisOpen() ? "ouvert" : "ferme") + String(" NY:") + (isNewYorkOpen() ? "ouvert" : "ferme"));
     
     display.drawLine(0, 45, 300, 45, GxEPD_BLACK);
     
     int yPos = 75;
     for (int i = 0; i < page1Count; i++) {
-      if (page1Data[i].isValid) {
-        drawStock(page1Data[i], yPos);
-        yPos += 60;
-      }
+      drawStock(page1Data[i], yPos);
+      yPos += 60;
     }
     drawFooter(1);
   } while (display.nextPage());
@@ -371,17 +454,14 @@ void displayPage2(bool usePartial) {
     
     display.setFont(&FreeSans9pt7b);
     display.setCursor(5, 38);
-    String marketStatus = String("Paris:") + (isParisOpen() ? "ouvert" : "ferme") + String(" NY:") + (isNewYorkOpen() ? "ouvert" : "ferme");
-    display.print(marketStatus);
+    display.print(String("Paris:") + (isParisOpen() ? "ouvert" : "ferme") + String(" NY:") + (isNewYorkOpen() ? "ouvert" : "ferme"));
     
     display.drawLine(0, 45, 300, 45, GxEPD_BLACK);
     
     int yPos = 75;
     for (int i = 0; i < page2StockCount; i++) {
-      if (page2StockData[i].isValid) {
-        drawStock(page2StockData[i], yPos);
-        yPos += 50;
-      }
+      drawStock(page2StockData[i], yPos);
+      yPos += 50;
     }
     
     yPos += 5;
@@ -392,10 +472,8 @@ void displayPage2(bool usePartial) {
     yPos += 25;
     
     for (int i = 0; i < page2CryptoCount; i++) {
-      if (page2CryptoData[i].isValid) {
-        drawCrypto(page2CryptoData[i], yPos);
-        yPos += 45;
-      }
+      drawCrypto(page2CryptoData[i], yPos);
+      yPos += 45;
     }
     drawFooter(2);
   } while (display.nextPage());
@@ -405,6 +483,14 @@ void drawStock(StockData stock, int yPos) {
   display.setFont(&FreeSansBold18pt7b);
   display.setCursor(5, yPos);
   display.print(stock.symbol);
+  
+  // Affichage de l'erreur si la valeur n'est plus valide après 3 échecs consécutifs
+  if (!stock.isValid && stock.failCount >= 3) {
+    display.setFont(&FreeSansBold12pt7b);
+    display.setCursor(140, yPos);
+    display.print("Err API Yahoo");
+    return;
+  }
   
   String priceStr = String(stock.price, 2) + stock.currency;
   display.setFont(&FreeSansBold12pt7b);
@@ -433,6 +519,13 @@ void drawCrypto(StockData crypto, int yPos) {
   display.setCursor(5, yPos);
   display.print(crypto.symbol);
   
+  if (!crypto.isValid && crypto.failCount >= 3) {
+    display.setFont(&FreeSansBold9pt7b);
+    display.setCursor(140, yPos);
+    display.print("Err API Crypto");
+    return;
+  }
+  
   String priceStr = String(crypto.price, 2) + crypto.currency;
   display.setFont(&FreeSansBold12pt7b);
   int16_t x1, y1; uint16_t w, h;
@@ -447,31 +540,54 @@ void drawCrypto(StockData crypto, int yPos) {
   display.setCursor(295 - w, yPos);
   display.print(changeStr);
   
-  int arrowString = 295 - w - 18;
+  int arrowX = 295 - w - 18;
   if (crypto.changePercent > 0) {
-    display.fillTriangle(arrowString, yPos-3, arrowString-5, yPos+3, arrowString+5, yPos+3, GxEPD_BLACK);
+    display.fillTriangle(arrowX, yPos-3, arrowX-5, yPos+3, arrowX+5, yPos+3, GxEPD_BLACK);
   } else if (crypto.changePercent < 0) {
-    display.fillTriangle(arrowString-5, yPos-3, arrowString+5, yPos-3, arrowString, yPos+3, GxEPD_BLACK);
+    display.fillTriangle(arrowX-5, yPos-3, arrowX+5, yPos-3, arrowX, yPos+3, GxEPD_BLACK);
   }
 }
 
+// Dessine le pied de page (Footer) avec gestion des erreurs WiFi, Bourse et Météo
 void drawFooter(int pageNum) {
   display.drawLine(0, 378, 300, 378, GxEPD_BLACK);
   display.setFont();  
   
-  struct tm timeinfo;
-  if (getLocalTime(&timeinfo)) {
-    char timeParis[10];
-    strftime(timeParis, sizeof(timeParis), "%H:%M", &timeinfo);
-    int hourNY = (timeinfo.tm_hour - 6 + 24) % 24;
-    char timeNY[10];
-    sprintf(timeNY, "%d:%02d", hourNY, timeinfo.tm_min);
-    
-    display.setCursor(5, 393);
-    display.print(String(timeParis) + " Paris (" + timeNY + " NY)");
+  // 1. Partie Gauche : Affichage de l'heure ou des erreurs (WiFi / Bourse)
+  display.setCursor(5, 393);
+  if (wifiErrorState) {
+    display.print("Erreur : WiFi deconnecte");
+  } else if (stockErrorState) {
+    display.print("Err HTTP Yahoo: " + String(lastStockHttpCode));
+  } else {
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+      char timeParis[10];
+      strftime(timeParis, sizeof(timeParis), "%H:%M", &timeinfo);
+      
+      int hourNY = timeinfo.tm_hour - 6;
+      if (hourNY < 0) hourNY += 24;
+      
+      char timeNY[10];
+      sprintf(timeNY, "%d:%02d", hourNY, timeinfo.tm_min);
+      
+      display.print(timeParis);
+      display.print(" Paris (");
+      display.print(timeNY);
+      display.print(" NY)");
+    } else {
+      display.print("Erreur : Synchro Heure");
+    }
   }
   
-  String rightStr = weatherValid ? String((int)round(outdoorTemp)) + "C  Pg." + String(pageNum) + "/2" : "Pg. " + String(pageNum) + "/2";
+  // 2. Partie Droite : Affichage de la température ou de l'erreur météo
+  String rightStr = "";
+  if (weatherErrorState || !weatherValid) {
+    rightStr = "Err Meteo Pg." + String(pageNum) + "/2";
+  } else {
+    rightStr = String((int)round(outdoorTemp)) + "C  Pg." + String(pageNum) + "/2";
+  }
+  
   int16_t x1, y1; uint16_t w, h;
   display.getTextBounds(rightStr, 0, 0, &x1, &y1, &w, &h);
   display.setCursor(295 - w, 393);
@@ -498,12 +614,12 @@ void showError(String title, String message) {
   do {
     display.fillScreen(GxEPD_WHITE);
     display.setFont(&FreeSansBold12pt7b);
-    display.setCursor(20, 160);
+    display.setCursor(20, 180);
     display.print("ERREUR :");
-    display.setCursor(20, 190);
+    display.setCursor(20, 210);
     display.print(title);
     display.setFont(&FreeSans9pt7b);
-    display.setCursor(20, 230);
+    display.setCursor(20, 240);
     display.print(message);
   } while (display.nextPage());
 }
