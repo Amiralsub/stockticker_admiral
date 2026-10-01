@@ -92,6 +92,7 @@ const int daylightOffset_sec = 3600;     // +1h en été (Heure d'été)
 // ============================================================================
 // 4. DÉCLARATIONS ANTICIPÉES (PROTOTYPES)
 // ============================================================================
+void logSerial(String message);
 bool checkAndEnsureWiFi();
 StockData getStockQuote(String symbol);
 StockData getCryptoQuote(String symbol);
@@ -114,7 +115,23 @@ void setHighCPU() { setCpuFrequencyMhz(240); } // Pleine puissance (WiFi, API, �
 void setLowCPU()  { setCpuFrequencyMhz(80); }  // Économie d'énergie le reste du temps
 
 // ============================================================================
-// 5. INITIALISATION (SETUP)
+// 5. FONCTION DE LOG AVEC HORODATAGE
+// ============================================================================
+
+void logSerial(String message) {
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo)) {
+    char timeStr[15];
+    strftime(timeStr, sizeof(timeStr), "[%H:%M:%S] ", &timeinfo);
+    Serial.print(timeStr);
+  } else {
+    Serial.print("[--:--:--] ");
+  }
+  Serial.println(message);
+}
+
+// ============================================================================
+// 6. INITIALISATION (SETUP)
 // ============================================================================
 
 void setup() {
@@ -124,7 +141,7 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   
-  Serial.println("\n=== Démarrage de l'ESP32 Stock Ticker ===");
+  logSerial("=== Démarrage de l'ESP32 Stock Ticker ===");
   
   display.init(115200);
   display.setRotation(3); // Orientation horizontale de l'écran
@@ -141,7 +158,7 @@ void setup() {
     updateAllData();          
     displayCurrentPage(false);  
     
-    Serial.println("=== Configuration terminée ===\n");
+    logSerial("=== Configuration terminée ===");
   } else {
     wifiErrorState = true;
     showError("Erreur WiFi", "Vérifiez les identifiants");
@@ -151,7 +168,7 @@ void setup() {
 }
 
 // ============================================================================
-// 6. BOUCLE PRINCIPALE (LOOP)
+// 7. BOUCLE PRINCIPALE (LOOP)
 // ============================================================================
 
 void loop() {
@@ -169,7 +186,7 @@ void loop() {
     
     if (currentTime - lastDataRefresh >= dataRefreshInterval) {
       setHighCPU();
-      Serial.println("\n--- Rafraîchissement planifié des données ---");
+      logSerial("\n--- Rafraîchissement planifié des données ---");
       updateAllData();
       displayCurrentPage(false); 
       lastDataRefresh = millis();
@@ -179,7 +196,7 @@ void loop() {
     
     if (currentTime - lastPageSwap >= pageSwapInterval) {
       setHighCPU();
-      Serial.println("\n--- Changement de page d'affichage ---");
+      logSerial("\n--- Changement de page d'affichage ---");
       currentPage = (currentPage == 0) ? 1 : 0;  
       lastPageSwap = currentTime;
       displayCurrentPage(true); 
@@ -195,7 +212,7 @@ void loop() {
 }
 
 // ============================================================================
-// 7. GESTION DU RÉSEAU ET DES HORAIRES DE MARCHÉ
+// 8. GESTION DU RÉSEAU ET DES HORAIRES DE MARCHÉ
 // ============================================================================
 
 bool checkAndEnsureWiFi() {
@@ -208,7 +225,7 @@ bool checkAndEnsureWiFi() {
   static unsigned long lastBeginAttempt = 0;
   unsigned long now = millis();
 
-  // Si on a lancé une tentative il y a moins de 15 secondes, on évite de relancer WiFi.begin() (anti "sta is connecting")
+  // Si on a lancé une tentative il y a moins de 15 secondes, on évite de relancer WiFi.begin()
   if (now - lastBeginAttempt < 15000 && lastBeginAttempt != 0) {
     return (WiFi.status() == WL_CONNECTED);
   }
@@ -218,7 +235,7 @@ bool checkAndEnsureWiFi() {
     return false;
   }
 
-  Serial.println("[WIFI] Lancement d'une nouvelle tentative de connexion...");
+  logSerial("[WIFI] Lancement d'une nouvelle tentative de connexion...");
   lastBeginAttempt = now;
   WiFi.begin(ssid, password);
   
@@ -261,11 +278,11 @@ bool isNewYorkOpen() {
 }
 
 // ============================================================================
-// 8. RÉCUPÉRATION DES DONNÉES (APIs HTTP)
+// 9. RÉCUPÉRATION DES DONNÉES (APIs HTTP)
 // ============================================================================
 
 void updateWeather() {
-  Serial.println("[MÉTÉO] Récupération de la météo...");
+  logSerial("[MÉTÉO] Récupération de la météo...");
   if (!checkAndEnsureWiFi()) {
     weatherValid = false;
     weatherErrorState = true;
@@ -286,16 +303,20 @@ void updateWeather() {
       outdoorTemp = doc["current"]["temperature_2m"].as<float>();
       weatherValid = true;
       weatherErrorState = false;
-      Serial.printf("[MÉTÉO] Succès : %.1f°C\n", outdoorTemp);
+      char buf[50];
+      sprintf(buf, "[MÉTÉO] Succès : %.1f°C", outdoorTemp);
+      logSerial(buf);
     } else {
       weatherValid = false;
       weatherErrorState = true;
-      Serial.println("[MÉTÉO] Erreur de parsing JSON");
+      logSerial("[MÉTÉO] Erreur de parsing JSON");
     }
   } else {
     weatherValid = false;
     weatherErrorState = true;
-    Serial.printf("[MÉTÉO] Échec - Erreur HTTP ou Timeout (Code: %d)\n", httpCode);
+    char buf[60];
+    sprintf(buf, "[MÉTÉO] Échec - Erreur HTTP ou Timeout (Code: %d)", httpCode);
+    logSerial(buf);
   }
   http.end();
 }
@@ -308,11 +329,11 @@ void updateAllData() {
     StockData newData = getStockQuote(page1Stocks[i]);
     if (newData.isValid) {
       page1Data[i] = newData;
-      page1Data[i].failCount = 0; // Remise à zéro du compteur en cas de succès
+      page1Data[i].failCount = 0; 
     } else {
-      page1Data[i].failCount++;   // Incrémentation des échecs consécutifs
+      page1Data[i].failCount++;   
       if (page1Data[i].failCount >= 3) {
-        page1Data[i].isValid = false; // Bloque et force l'affichage de l'erreur après 3 échecs
+        page1Data[i].isValid = false; 
       }
       failedStocks++;
     }
@@ -372,7 +393,9 @@ StockData getStockQuote(String symbol) {
   http.setUserAgent("Mozilla/5.0");
   
   int httpCode = http.GET();
-  Serial.printf("[BOURSE] Symbole %s - Code HTTP: %d\n", symbol.c_str(), httpCode);
+  char buf[60];
+  sprintf(buf, "[BOURSE] Symbole %s - Code HTTP: %d", symbol.c_str(), httpCode);
+  logSerial(buf);
   
   if (httpCode == HTTP_CODE_OK) {
     JsonDocument doc;
@@ -407,7 +430,7 @@ StockData getCryptoQuote(String symbol) {
 }
 
 // ============================================================================
-// 9. AFFICHAGE GRAPHIQUE SUR L'ÉCRAN E-PAPER
+// 10. AFFICHAGE GRAPHIQUE SUR L'ÉCRAN E-PAPER
 // ============================================================================
 
 void displayCurrentPage(bool usePartial) {
@@ -484,7 +507,6 @@ void drawStock(StockData stock, int yPos) {
   display.setCursor(5, yPos);
   display.print(stock.symbol);
   
-  // Affichage de l'erreur si la valeur n'est plus valide après 3 échecs consécutifs
   if (!stock.isValid && stock.failCount >= 3) {
     display.setFont(&FreeSansBold12pt7b);
     display.setCursor(140, yPos);
@@ -548,15 +570,26 @@ void drawCrypto(StockData crypto, int yPos) {
   }
 }
 
-// Dessine le pied de page (Footer) avec gestion des erreurs WiFi, Bourse et Météo
+// Dessine le pied de page (Footer) avec gestion précise des erreurs WiFi, Bourse et Météo
 void drawFooter(int pageNum) {
   display.drawLine(0, 378, 300, 378, GxEPD_BLACK);
   display.setFont();  
   
-  // 1. Partie Gauche : Affichage de l'heure ou des erreurs (WiFi / Bourse)
+  // 1. Partie Gauche : Affichage de l'heure ou des erreurs détaillées (WiFi / Bourse)
   display.setCursor(5, 393);
   if (wifiErrorState) {
-    display.print("Erreur : WiFi deconnecte");
+    // Récupération et affichage du statut précis de l'ESP32 WiFi
+    String wifiErrText = "Err WiFi: ";
+    wl_status_t wStatus = WiFi.status();
+    switch (wStatus) {
+      case WL_NO_SSID_AVAIL:  wifiErrText += "No SSID"; break;
+      case WL_CONNECT_FAILED: wifiErrText += "Failed"; break;
+      case WL_CONNECTION_LOST:wifiErrText += "Lost"; break;
+      case WL_DISCONNECTED:   wifiErrText += "Disconnected"; break;
+      case WL_IDLE_STATUS:    wifiErrText += "Idle"; break;
+      default:                wifiErrText += "Code " + String(wStatus); break;
+    }
+    display.print(wifiErrText);
   } else if (stockErrorState) {
     display.print("Err HTTP Yahoo: " + String(lastStockHttpCode));
   } else {
