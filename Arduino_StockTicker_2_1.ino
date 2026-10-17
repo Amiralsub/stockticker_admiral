@@ -20,7 +20,7 @@
 // ============================================================================
 
 const char* ssid = "plopplopplop";       // Nom du réseau WiFi
-const char* password = "papapapa";     // Mot de passe du réseau WiFi
+const char* password = "xxxxx";     // Mot de passe du réseau WiFi
 
 String page1Stocks[] = {"^GSPC", "^STOXX", "^IBEX", "GOOGL", "SAF.PA"};
 int page1Count = 5;
